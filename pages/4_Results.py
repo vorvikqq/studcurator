@@ -1,12 +1,16 @@
 """Results / export page: aggregated scores per candidate, sortable, downloadable."""
 
+import io
+
 import pandas as pd
 import streamlit as st
 
 import auth
 import db
 from common import (
+    CURATOR_EXPERIENCE_FIELD,
     CURATOR_EXPERIENCE_LABEL,
+    LOCATION_FIELD,
     LOCATION_LABEL,
     NUMERIC_CRITERIA,
     NUMERIC_SCORE_COLUMNS,
@@ -118,4 +122,71 @@ st.download_button(
     data=csv_bytes,
     file_name="results.csv",
     mime="text/csv",
+)
+
+
+def sanitize_sheet_name(name: str, used: set[str]) -> str:
+    """Excel sheet names: <=31 chars, no [ ] : * ? / \\, and unique within the workbook."""
+    invalid = set("[]:*?/\\")
+    cleaned = "".join(c for c in (name or "").strip() if c not in invalid) or "Без імені"
+    cleaned = cleaned[:31]
+    candidate = cleaned
+    i = 2
+    while candidate in used:
+        suffix = f" ({i})"
+        candidate = cleaned[: 31 - len(suffix)] + suffix
+        i += 1
+    used.add(candidate)
+    return candidate
+
+
+def build_excel_by_reviewer(
+    overview_df: pd.DataFrame, scores_for_export: pd.DataFrame, candidates_df: pd.DataFrame
+) -> bytes:
+    """One overview sheet + one sheet per reviewer with just their own scores."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        overview_df.to_excel(writer, sheet_name="Загальні результати", index=False)
+        used_names = {"Загальні результати"}
+
+        if not scores_for_export.empty:
+            merged = scores_for_export.merge(
+                candidates_df[["candidate_id", "full_name", "telegram", "course", "education_program"]],
+                on="candidate_id",
+                how="left",
+            )
+            reviewer_cols = ["full_name", "telegram", "course", "education_program"] + NUMERIC_SCORE_COLUMNS + [
+                CURATOR_EXPERIENCE_FIELD,
+                LOCATION_FIELD,
+                "comment",
+            ]
+            reviewer_rename = {
+                "full_name": "ПІБ",
+                "telegram": "Телеграм",
+                "course": "Курс",
+                "education_program": "Освітня програма",
+                CURATOR_EXPERIENCE_FIELD: CURATOR_EXPERIENCE_LABEL,
+                LOCATION_FIELD: LOCATION_LABEL,
+                "comment": "Коментар",
+            }
+            reviewer_rename.update({f: l for f, l in NUMERIC_CRITERIA})
+
+            for reviewer in sorted(merged["reviewer_name"].dropna().unique()):
+                sheet_df = merged.loc[merged["reviewer_name"] == reviewer, reviewer_cols].copy()
+                sheet_df[CURATOR_EXPERIENCE_FIELD] = sheet_df[CURATOR_EXPERIENCE_FIELD].map(
+                    {1: "Так", 0: "Ні"}
+                )
+                sheet_df = sheet_df.rename(columns=reviewer_rename)
+                sheet_name = sanitize_sheet_name(reviewer, used_names)
+                sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+    return buffer.getvalue()
+
+
+scores_for_export = scores_df[scores_df["candidate_id"].isin(results["candidate_id"])]
+excel_bytes = build_excel_by_reviewer(display, scores_for_export, candidates_df)
+st.download_button(
+    "Завантажити Excel (окремий аркуш на кожного рецензента)",
+    data=excel_bytes,
+    file_name="results_by_reviewer.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
