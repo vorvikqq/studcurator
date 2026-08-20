@@ -5,14 +5,15 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+import auth
 import db
-from common import render_sidebar_reviewer
 from import_data import build_column_mapping, import_dataframe, load_csv
 
 st.set_page_config(page_title="Імпорт кандидатів", layout="wide")
 
 db.init_db()
-render_sidebar_reviewer()
+auth.render_sidebar_user()
+auth.require_admin()
 
 st.title("Імпорт / налаштування")
 st.write(

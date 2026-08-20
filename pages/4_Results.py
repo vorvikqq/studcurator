@@ -3,13 +3,21 @@
 import pandas as pd
 import streamlit as st
 
+import auth
 import db
-from common import CRITERIA, SCORE_COLUMNS, compute_score_aggregates, render_sidebar_reviewer
+from common import (
+    CURATOR_EXPERIENCE_LABEL,
+    LOCATION_LABEL,
+    NUMERIC_CRITERIA,
+    NUMERIC_SCORE_COLUMNS,
+    compute_score_aggregates,
+)
 
 st.set_page_config(page_title="Результати", layout="wide")
 
 db.init_db()
-render_sidebar_reviewer()
+auth.render_sidebar_user()
+auth.require_admin()
 
 st.title("Результати / експорт")
 
@@ -23,12 +31,25 @@ scores_df = db.get_all_scores()
 agg = compute_score_aggregates(scores_df)
 
 results = candidates_df.merge(agg, left_on="candidate_id", right_index=True, how="left")
-for col in SCORE_COLUMNS + ["overall"]:
+for col in NUMERIC_SCORE_COLUMNS + ["overall", "curator_experience_votes"]:
     if col not in results.columns:
         results[col] = pd.NA
 if "num_reviewers" not in results.columns:
     results["num_reviewers"] = 0
+if "location" not in results.columns:
+    results["location"] = ""
 results["num_reviewers"] = results["num_reviewers"].fillna(0).astype(int)
+results["location"] = results["location"].fillna("")
+
+
+def format_curator_experience(row: pd.Series) -> str:
+    if not row["num_reviewers"]:
+        return "—"
+    votes = int(row["curator_experience_votes"]) if pd.notna(row["curator_experience_votes"]) else 0
+    return f"{votes}/{row['num_reviewers']}"
+
+
+results["curator_experience_display"] = results.apply(format_curator_experience, axis=1)
 
 programs = ["Всі"] + sorted(p for p in candidates_df["education_program"].unique() if p)
 program_choice = st.selectbox("Освітня програма", programs)
@@ -39,8 +60,10 @@ low_coverage_threshold = st.number_input(
     "Позначати кандидатів із кількістю рецензентів ≤", min_value=0, max_value=10, value=1
 )
 
-display_cols = ["full_name", "telegram", "education_program", "course"] + SCORE_COLUMNS + [
+display_cols = ["full_name", "telegram", "education_program", "course"] + NUMERIC_SCORE_COLUMNS + [
     "overall",
+    "curator_experience_display",
+    "location",
     "num_reviewers",
 ]
 display = results[display_cols].copy()
@@ -50,12 +73,14 @@ rename_map = {
     "education_program": "Освітня програма",
     "course": "Курс",
     "overall": "Середній бал",
+    "curator_experience_display": CURATOR_EXPERIENCE_LABEL,
+    "location": LOCATION_LABEL,
     "num_reviewers": "Рецензентів",
 }
-rename_map.update({f: l for f, l in CRITERIA})
+rename_map.update({f: l for f, l in NUMERIC_CRITERIA})
 display = display.rename(columns=rename_map)
 
-numeric_cols = [l for _, l in CRITERIA] + ["Середній бал"]
+numeric_cols = [l for _, l in NUMERIC_CRITERIA] + ["Середній бал"]
 display[numeric_cols] = display[numeric_cols].apply(pd.to_numeric, errors="coerce").round(2)
 
 display = display.sort_values("Середній бал", ascending=False, na_position="last")

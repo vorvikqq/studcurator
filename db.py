@@ -32,14 +32,18 @@ CANDIDATE_COLUMNS = [
     "raw_row_json",
 ]
 
-SCORE_FIELDS = [
-    "score_form_answers",
-    "score_curator_experience",
-    "score_interview_presentation",
+# Numeric (1-5) criteria that go into the overall average.
+NUMERIC_SCORE_FIELDS = [
     "score_oss_experience",
-    "score_location",
+    "score_form_answers",
+    "score_interview_presentation",
     "score_case_answers",
 ]
+# Non-numeric criteria: recorded per (candidate, reviewer) but kept out of the average.
+CURATOR_EXPERIENCE_FIELD = "curator_experience_confirmed"  # boolean (0/1)
+LOCATION_FIELD = "location_text"  # free text
+
+SCORE_FIELDS = NUMERIC_SCORE_FIELDS + [CURATOR_EXPERIENCE_FIELD, LOCATION_FIELD]
 
 
 @st.cache_resource
@@ -84,12 +88,12 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),
             reviewer_name TEXT NOT NULL,
-            score_form_answers INTEGER,
-            score_curator_experience INTEGER,
-            score_interview_presentation INTEGER,
             score_oss_experience INTEGER,
-            score_location INTEGER,
+            score_form_answers INTEGER,
+            score_interview_presentation INTEGER,
             score_case_answers INTEGER,
+            curator_experience_confirmed INTEGER,
+            location_text TEXT,
             comment TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -100,6 +104,18 @@ def init_db() -> None:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_scores_candidate_reviewer
         ON scores(candidate_id, reviewer_name);
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin', 'reviewer')),
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
         """
     )
     conn.commit()
@@ -190,9 +206,41 @@ def get_reviewer_score(candidate_id: str, reviewer_name: str) -> Optional[sqlite
     return cur.fetchone()
 
 
-def get_reviewer_names() -> list[str]:
+def create_user(
+    username: str, display_name: str, salt: str, password_hash: str, role: str
+) -> None:
     conn = get_connection()
-    cur = conn.execute(
-        "SELECT DISTINCT reviewer_name FROM scores ORDER BY reviewer_name COLLATE NOCASE"
+    conn.execute(
+        """
+        INSERT INTO users (username, display_name, salt, password_hash, role)
+        VALUES (?, ?, ?, ?, ?);
+        """,
+        (username, display_name, salt, password_hash, role),
     )
-    return [row["reviewer_name"] for row in cur.fetchall()]
+    conn.commit()
+
+
+def get_user(username: str) -> Optional[sqlite3.Row]:
+    conn = get_connection()
+    cur = conn.execute("SELECT * FROM users WHERE username = ?", (username,))
+    return cur.fetchone()
+
+
+def count_users() -> int:
+    conn = get_connection()
+    cur = conn.execute("SELECT COUNT(*) AS c FROM users")
+    return cur.fetchone()["c"]
+
+
+def list_users() -> pd.DataFrame:
+    conn = get_connection()
+    return pd.read_sql_query(
+        "SELECT username, display_name, role, created_at FROM users ORDER BY username COLLATE NOCASE",
+        conn,
+    )
+
+
+def delete_user(username: str) -> None:
+    conn = get_connection()
+    conn.execute("DELETE FROM users WHERE username = ?", (username,))
+    conn.commit()

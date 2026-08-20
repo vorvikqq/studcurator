@@ -3,13 +3,16 @@
 import pandas as pd
 import streamlit as st
 
+import auth
 import db
-from common import compute_score_aggregates, render_sidebar_reviewer
+from common import compute_score_aggregates
 
 st.set_page_config(page_title="Кандидати", layout="wide")
 
 db.init_db()
-reviewer_name = render_sidebar_reviewer()
+user = auth.render_sidebar_user()
+reviewer_name = user["display_name"]
+is_admin = auth.is_admin()
 
 st.title("Кандидати")
 
@@ -27,11 +30,7 @@ df = candidates_df.merge(
 )
 df["num_reviewers"] = df["num_reviewers"].fillna(0).astype(int)
 
-my_scored_ids = (
-    set(scores_df.loc[scores_df["reviewer_name"] == reviewer_name, "candidate_id"])
-    if reviewer_name
-    else set()
-)
+my_scored_ids = set(scores_df.loc[scores_df["reviewer_name"] == reviewer_name, "candidate_id"])
 df["scored_by_me"] = df["candidate_id"].isin(my_scored_ids)
 
 programs = ["Всі"] + sorted(p for p in candidates_df["education_program"].unique() if p)
@@ -45,7 +44,6 @@ with col1:
         "Статус оцінювання (мною)",
         ["Всі", "Ще не оцінені мною", "Оцінені мною"],
         horizontal=True,
-        disabled=not reviewer_name,
     )
 with col2:
     courses = ["Всі"] + sorted((c for c in candidates_df["course"].unique() if c), key=str)
@@ -64,33 +62,37 @@ if search.strip():
         | filtered["phone"].str.lower().str.contains(s, na=False)
     )
     filtered = filtered[mask]
-if reviewer_name and scored_filter == "Ще не оцінені мною":
+if scored_filter == "Ще не оцінені мною":
     filtered = filtered[~filtered["scored_by_me"]]
-elif reviewer_name and scored_filter == "Оцінені мною":
+elif scored_filter == "Оцінені мною":
     filtered = filtered[filtered["scored_by_me"]]
 
 filtered = filtered.sort_values("full_name")
 
 st.caption(f"Знайдено кандидатів: {len(filtered)}")
 
-display_df = filtered[
-    ["full_name", "telegram", "course", "education_program", "scored_by_me", "overall", "num_reviewers"]
-].copy()
+display_cols = ["full_name", "telegram", "course", "education_program", "scored_by_me"]
+rename_map = {
+    "full_name": "ПІБ",
+    "telegram": "Телеграм",
+    "course": "Курс",
+    "education_program": "Освітня програма",
+    "scored_by_me": "Оцінено мною",
+    "overall": "Середній бал",
+    "num_reviewers": "Рецензентів",
+}
+# Aggregated scores across all reviewers stay hidden from regular reviewers so that
+# nobody's own scoring is influenced by seeing others' — admins see everything.
+if is_admin:
+    display_cols += ["overall", "num_reviewers"]
+
+display_df = filtered[display_cols].copy()
 display_df["scored_by_me"] = display_df["scored_by_me"].map({True: "✅", False: "—"})
-display_df["overall"] = pd.to_numeric(display_df["overall"], errors="coerce").map(
-    lambda x: "—" if pd.isna(x) else f"{x:.2f}"
-)
-display_df = display_df.rename(
-    columns={
-        "full_name": "ПІБ",
-        "telegram": "Телеграм",
-        "course": "Курс",
-        "education_program": "Освітня програма",
-        "scored_by_me": "Оцінено мною",
-        "overall": "Середній бал",
-        "num_reviewers": "Рецензентів",
-    }
-)
+if is_admin:
+    display_df["overall"] = pd.to_numeric(display_df["overall"], errors="coerce").map(
+        lambda x: "—" if pd.isna(x) else f"{x:.2f}"
+    )
+display_df = display_df.rename(columns=rename_map)
 st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 if len(filtered) > 0:

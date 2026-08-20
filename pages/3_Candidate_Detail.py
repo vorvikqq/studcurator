@@ -2,13 +2,22 @@
 
 import streamlit as st
 
+import auth
 import db
-from common import CRITERIA, SCORE_COLUMNS, render_sidebar_reviewer
+from common import (
+    CURATOR_EXPERIENCE_FIELD,
+    CURATOR_EXPERIENCE_LABEL,
+    LOCATION_FIELD,
+    LOCATION_LABEL,
+    NUMERIC_CRITERIA,
+    NUMERIC_SCORE_COLUMNS,
+)
 
 st.set_page_config(page_title="Картка кандидата", layout="wide")
 
 db.init_db()
-reviewer_name = render_sidebar_reviewer()
+user = auth.render_sidebar_user()
+reviewer_name = user["display_name"]
 
 st.title("Картка кандидата")
 
@@ -80,47 +89,79 @@ for field, label in case_labels.items():
 st.divider()
 st.subheader("Оцінювання")
 
-if not reviewer_name:
-    st.warning("Вкажіть своє ім'я у бічній панелі, щоб залишити оцінку.")
-else:
-    existing = db.get_reviewer_score(candidate_id, reviewer_name)
-    with st.form("score_form"):
-        values = {}
-        for field, label in CRITERIA:
-            default = int(existing[field]) if existing and existing[field] is not None else 3
-            values[field] = st.slider(label, 1, 5, default)
-        comment = st.text_area(
-            "Загальне враження (коментар)",
-            value=(existing["comment"] if existing and existing["comment"] else ""),
+existing = db.get_reviewer_score(candidate_id, reviewer_name)
+with st.form("score_form"):
+    values = {}
+    for field, label in NUMERIC_CRITERIA:
+        default = int(existing[field]) if existing and existing[field] is not None else 3
+        values[field] = st.slider(label, 1, 5, default)
+
+    curator_default = (
+        bool(existing[CURATOR_EXPERIENCE_FIELD])
+        if existing and existing[CURATOR_EXPERIENCE_FIELD] is not None
+        else False
+    )
+    curator_experience = st.checkbox(CURATOR_EXPERIENCE_LABEL, value=curator_default)
+
+    location_default = existing[LOCATION_FIELD] if existing and existing[LOCATION_FIELD] else ""
+    location = st.text_input(LOCATION_LABEL, value=location_default)
+
+    comment = st.text_area(
+        "Загальне враження (коментар)",
+        value=(existing["comment"] if existing and existing["comment"] else ""),
+    )
+    submitted = st.form_submit_button("Зберегти оцінку", type="primary")
+
+values[CURATOR_EXPERIENCE_FIELD] = 1 if curator_experience else 0
+values[LOCATION_FIELD] = location.strip()
+
+if submitted:
+    try:
+        db.upsert_score(candidate_id, reviewer_name, values, comment)
+    except Exception as e:
+        st.error(f"Не вдалося зберегти оцінку: {e}")
+    else:
+        st.success("Оцінку збережено.")
+        st.rerun()
+
+# Other reviewers' scores are only visible to admins — reviewers score independently
+# without seeing each other's assessments.
+if auth.is_admin():
+    st.divider()
+    st.subheader("Оцінки всіх рецензентів")
+
+    all_scores = db.get_scores_for_candidate(candidate_id)
+    if all_scores.empty:
+        st.info("Поки що ніхто не оцінив цього кандидата.")
+    else:
+        show_cols = ["reviewer_name"] + NUMERIC_SCORE_COLUMNS + [
+            CURATOR_EXPERIENCE_FIELD,
+            LOCATION_FIELD,
+            "comment",
+        ]
+        show_df = all_scores[show_cols].copy()
+        show_df[CURATOR_EXPERIENCE_FIELD] = show_df[CURATOR_EXPERIENCE_FIELD].map(
+            {1: "Так", 0: "Ні"}
         )
-        submitted = st.form_submit_button("Зберегти оцінку", type="primary")
+        rename_map = {
+            "reviewer_name": "Рецензент",
+            "comment": "Коментар",
+            CURATOR_EXPERIENCE_FIELD: CURATOR_EXPERIENCE_LABEL,
+            LOCATION_FIELD: LOCATION_LABEL,
+        }
+        rename_map.update({f: l for f, l in NUMERIC_CRITERIA})
+        show_df = show_df.rename(columns=rename_map)
+        st.dataframe(show_df, use_container_width=True, hide_index=True)
 
-    if submitted:
-        try:
-            db.upsert_score(candidate_id, reviewer_name, values, comment)
-        except Exception as e:
-            st.error(f"Не вдалося зберегти оцінку: {e}")
-        else:
-            st.success("Оцінку збережено.")
-            st.rerun()
+        avg_row = all_scores[NUMERIC_SCORE_COLUMNS].mean()
+        overall_avg = avg_row.mean()
+        metric_cols = st.columns(len(NUMERIC_SCORE_COLUMNS) + 1)
+        for i, (field, label) in enumerate(NUMERIC_CRITERIA):
+            metric_cols[i].metric(label, f"{avg_row[field]:.2f}")
+        metric_cols[-1].metric("Загальний середній", f"{overall_avg:.2f}")
 
-st.divider()
-st.subheader("Оцінки всіх рецензентів")
-
-all_scores = db.get_scores_for_candidate(candidate_id)
-if all_scores.empty:
-    st.info("Поки що ніхто не оцінив цього кандидата.")
-else:
-    show_cols = ["reviewer_name"] + SCORE_COLUMNS + ["comment"]
-    show_df = all_scores[show_cols].copy()
-    rename_map = {"reviewer_name": "Рецензент", "comment": "Коментар"}
-    rename_map.update({f: l for f, l in CRITERIA})
-    show_df = show_df.rename(columns=rename_map)
-    st.dataframe(show_df, use_container_width=True, hide_index=True)
-
-    avg_row = all_scores[SCORE_COLUMNS].mean()
-    overall_avg = avg_row.mean()
-    metric_cols = st.columns(len(SCORE_COLUMNS) + 1)
-    for i, (field, label) in enumerate(CRITERIA):
-        metric_cols[i].metric(label, f"{avg_row[field]:.2f}")
-    metric_cols[-1].metric("Загальний середній", f"{overall_avg:.2f}")
+        curator_votes = int(all_scores[CURATOR_EXPERIENCE_FIELD].sum())
+        st.caption(
+            f"{CURATOR_EXPERIENCE_LABEL}: {curator_votes}/{len(all_scores)} рецензентів "
+            "підтвердили (не входить у середній бал)."
+        )
