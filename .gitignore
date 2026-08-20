@@ -1,0 +1,25 @@
+# SQLite database (WAL mode leaves -wal/-shm sidecar files too)
+curator_app.db
+curator_app.db-wal
+curator_app.db-shm
+curator_app.db-journal
+
+# Candidate data contains PII (names, phone numbers, Telegram handles) -
+# don't commit it by default. Remove this line if you intentionally want
+# it in the repo (see README's deploy section).
+candidates.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
